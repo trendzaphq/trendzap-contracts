@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build
+artifacts/
+cache/
+typechain-types/
+out/
+
+# Coverage
+coverage/
+coverage.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Foundry
+cache_forge/
+
+# Misc
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
