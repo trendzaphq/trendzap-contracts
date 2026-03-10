@@ -1,10 +1,10 @@
 # TrendZap Contracts
 
-> Solidity smart contracts for TrendZap - the decentralized prediction market for social media virality, built exclusively on Arbitrum.
+> Solidity smart contracts for TrendZap - the decentralized prediction market for social media virality, built exclusively on Avalanche.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.20-blue)](https://docs.soliditylang.org/)
-[![Arbitrum](https://img.shields.io/badge/Chain-Arbitrum-blue)](https://arbitrum.io/)
+[![Avalanche](https://img.shields.io/badge/Chain-Avalanche-blue)](https://avax.network/)
 
 ---
 
@@ -92,7 +92,7 @@ pnpm test
 forge test
 ```
 
-### Deploy to Arbitrum Sepolia
+### Deploy to Avalanche Fuji
 
 ```bash
 pnpm deploy:sepolia
@@ -100,7 +100,7 @@ pnpm deploy:sepolia
 
 ## Deployments
 
-### Arbitrum Sepolia (Testnet)
+### Avalanche Fuji (Testnet)
 
 | Contract | Address | Verified |
 |----------|---------|----------|
@@ -109,7 +109,7 @@ pnpm deploy:sepolia
 | SocialOracle | `TBD` | ❌ |
 | Treasury | `TBD` | ❌ |
 
-### Arbitrum One (Mainnet)
+### Avalanche C-Chain (Mainnet)
 
 *Coming after audit completion*
 
@@ -141,8 +141,8 @@ trendzap-contracts/
 │   ├── MarketFactory.test.ts
 │   └── integration/
 ├── deployments/
-│   ├── arbitrum-sepolia.json
-│   └── arbitrum-one.json
+│   ├── avalanche-fuji.json
+│   └── avalanche-mainnet.json
 ├── hardhat.config.ts
 ├── foundry.toml
 └── package.json
@@ -202,5 +202,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 <p align="center">
-  <strong>Built with ❤️ on Arbitrum</strong>
+  <strong>Built with ❤️ on Avalanche</strong>
 </p>

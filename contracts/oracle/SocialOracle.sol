@@ -63,8 +63,8 @@ contract SocialOracle is ChainlinkClient, AccessControl {
         uint256 _fee,
         string memory _oracleApiUrl
     ) {
-        _setChainlinkToken(_linkToken);
-        _setChainlinkOracle(_oracle);
+        setChainlinkToken(_linkToken);
+        setChainlinkOracle(_oracle);
         
         jobId = _jobId;
         fee = _fee;
@@ -95,7 +95,7 @@ contract SocialOracle is ChainlinkClient, AccessControl {
         onlyRole(REQUESTER_ROLE)
         returns (bytes32 requestId) 
     {
-        Chainlink.Request memory req = _buildChainlinkRequest(
+        Chainlink.Request memory req = buildChainlinkRequest(
             jobId,
             address(this),
             this.fulfill.selector
@@ -112,11 +112,11 @@ contract SocialOracle is ChainlinkClient, AccessControl {
             )
         );
 
-        req._add("get", url);
-        req._add("path", "data,value");
-        req._addInt("times", 1);
+        req.add("get", url);
+        req.add("path", "data,value");
+        req.addInt("times", 1);
 
-        requestId = _sendChainlinkRequest(req, fee);
+        requestId = sendChainlinkRequest(req, fee);
 
         requestToMarket[requestId] = marketId;
         marketToRequest[marketId] = requestId;
@@ -184,11 +184,11 @@ contract SocialOracle is ChainlinkClient, AccessControl {
      * @notice Update Chainlink oracle address
      * @param _oracle New oracle address
      */
-    function setChainlinkOracle(address _oracle) 
+    function updateChainlinkOracle(address _oracle) 
         external 
         onlyRole(ADMIN_ROLE) 
     {
-        _setChainlinkOracle(_oracle);
+        setChainlinkOracle(_oracle);
     }
 
     /**
@@ -200,7 +200,7 @@ contract SocialOracle is ChainlinkClient, AccessControl {
         external 
         onlyRole(DEFAULT_ADMIN_ROLE) 
     {
-        LinkTokenInterface link = LinkTokenInterface(_chainlinkTokenAddress());
+        LinkTokenInterface link = LinkTokenInterface(chainlinkTokenAddress());
         require(link.transfer(to, amount), "Transfer failed");
     }
 }

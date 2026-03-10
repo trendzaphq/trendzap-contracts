@@ -1,7 +1,7 @@
 {
   "name": "@trendzap/contracts",
   "version": "0.1.0",
-  "description": "Solidity smart contracts for TrendZap prediction market on Arbitrum",
+  "description": "Solidity smart contracts for TrendZap prediction market on Avalanche",
   "author": "TrendZap Team",
   "license": "MIT",
   "repository": {
@@ -10,19 +10,24 @@
   },
   "keywords": [
     "ethereum",
+    "avalanche",
     "arbitrum",
     "solidity",
     "smart-contracts",
     "prediction-market",
-    "defi"
+    "defi",
+    "chainlink"
   ],
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
     "coverage": "hardhat coverage",
     "gas-report": "REPORT_GAS=true hardhat test",
+    "deploy:fuji": "hardhat run scripts/deploy.ts --network avalancheFuji",
+    "deploy:avax": "hardhat run scripts/deploy.ts --network avalancheMainnet",
     "deploy:sepolia": "hardhat run scripts/deploy.ts --network arbitrumSepolia",
     "deploy:mainnet": "hardhat run scripts/deploy.ts --network arbitrumOne",
+    "verify:fuji": "hardhat run scripts/verify.ts --network avalancheFuji",
     "verify": "hardhat run scripts/verify.ts",
     "clean": "hardhat clean",
     "lint": "solhint 'contracts/**/*.sol'",

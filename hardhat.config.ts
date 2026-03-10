@@ -5,8 +5,11 @@ import "dotenv/config";
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY || "0x0000000000000000000000000000000000000000000000000000000000000000";
 const ARBISCAN_API_KEY = process.env.ARBISCAN_API_KEY || "";
+const SNOWTRACE_API_KEY = process.env.SNOWTRACE_API_KEY || "";
 const ARBITRUM_SEPOLIA_RPC = process.env.ARBITRUM_SEPOLIA_RPC || "https://sepolia-rollup.arbitrum.io/rpc";
 const ARBITRUM_ONE_RPC = process.env.ARBITRUM_ONE_RPC || "https://arb1.arbitrum.io/rpc";
+const AVALANCHE_FUJI_RPC = process.env.AVALANCHE_FUJI_RPC || "https://api.avax-test.network/ext/bc/C/rpc";
+const AVALANCHE_MAINNET_RPC = process.env.AVALANCHE_MAINNET_RPC || "https://api.avax.network/ext/bc/C/rpc";
 
 const config: HardhatUserConfig = {
   solidity: {
@@ -23,6 +26,19 @@ const config: HardhatUserConfig = {
     hardhat: {
       chainId: 31337,
     },
+    // Avalanche Networks
+    avalancheFuji: {
+      url: AVALANCHE_FUJI_RPC,
+      chainId: 43113,
+      accounts: [PRIVATE_KEY],
+      gasPrice: 25000000000, // 25 gwei
+    },
+    avalancheMainnet: {
+      url: AVALANCHE_MAINNET_RPC,
+      chainId: 43114,
+      accounts: [PRIVATE_KEY],
+    },
+    // Arbitrum Networks (legacy)
     arbitrumSepolia: {
       url: ARBITRUM_SEPOLIA_RPC,
       chainId: 421614,
@@ -36,10 +52,20 @@ const config: HardhatUserConfig = {
   },
   etherscan: {
     apiKey: {
+      avalancheFujiTestnet: SNOWTRACE_API_KEY,
+      avalanche: SNOWTRACE_API_KEY,
       arbitrumSepolia: ARBISCAN_API_KEY,
       arbitrumOne: ARBISCAN_API_KEY,
     },
     customChains: [
+      {
+        network: "avalancheFujiTestnet",
+        chainId: 43113,
+        urls: {
+          apiURL: "https://api-testnet.snowtrace.io/api",
+          browserURL: "https://testnet.snowtrace.io",
+        },
+      },
       {
         network: "arbitrumSepolia",
         chainId: 421614,
