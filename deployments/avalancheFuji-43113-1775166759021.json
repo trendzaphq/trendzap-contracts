@@ -1,0 +1,18 @@
+{
+  "network": "avalancheFuji",
+  "chainId": 43113,
+  "timestamp": "2026-04-02T21:52:39.020Z",
+  "contracts": {
+    "ViralityPositions": "0x0fE424b731bfAe1a15574016887Cf2d28707275D",
+    "ViralityMarketV2": "0xCA2Fc8C0363B0bF26C602A17B403cEaD2322EFe1",
+    "MarketFactoryV2": "0xC1BA091eDD50AD9106f1F4B47C9Fb373602aF0BD"
+  },
+  "configuration": {
+    "treasury": "0x8f0E9b15028311F263be1B71c1D5d8Ae8a35294e",
+    "oracle": "0x8f0E9b15028311F263be1B71c1D5d8Ae8a35294e",
+    "settlementToken": "0x5425890298aed601595a70AB815c96711a31Bc65",
+    "settlementMode": "erc20_usdc",
+    "baseURI": "https://api.trendzap.xyz/metadata/"
+  },
+  "deployer": "0x8f0E9b15028311F263be1B71c1D5d8Ae8a35294e"
+}

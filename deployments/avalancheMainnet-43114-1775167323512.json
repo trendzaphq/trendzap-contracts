@@ -1,0 +1,18 @@
+{
+  "network": "avalancheMainnet",
+  "chainId": 43114,
+  "timestamp": "2026-04-02T22:02:03.502Z",
+  "contracts": {
+    "ViralityPositions": "0x837dD8Ce4E3CDd4d408d3B5D83998B110632bEaE",
+    "ViralityMarketV2": "0x5C13B24ae55fE5CaF8B694E6ff4478bfC0C22DB8",
+    "MarketFactoryV2": "0x55Ed74dFD27E16bd69decf473b524379A588a427"
+  },
+  "configuration": {
+    "treasury": "0x8f0E9b15028311F263be1B71c1D5d8Ae8a35294e",
+    "oracle": "0x8f0E9b15028311F263be1B71c1D5d8Ae8a35294e",
+    "settlementToken": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+    "settlementMode": "erc20_usdc",
+    "baseURI": "https://api.trendzap.xyz/metadata/"
+  },
+  "deployer": "0x8f0E9b15028311F263be1B71c1D5d8Ae8a35294e"
+}

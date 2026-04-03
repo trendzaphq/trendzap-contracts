@@ -4,22 +4,22 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/proxy/Clones.sol";
-import "./ViralityMarket.sol";
+import "./ViralityMarketV2.sol";
 
 /**
- * @title MarketFactory
+ * @title MarketFactoryV2
  * @notice Factory for deploying TrendZap prediction markets
  * @dev Uses minimal proxy pattern for gas-efficient deployments
- *
+ * 
  * Features:
  * - Minimal proxy (EIP-1167) for cheap deployments
  * - Singleton market contract with per-market state
  * - Role-based access control
  * - Market registry and validation
- *
+ * 
  * @author TrendZap Team
  */
-contract MarketFactory is AccessControl, Pausable {
+contract MarketFactoryV2 is AccessControl, Pausable {
     using Clones for address;
 
     // ============ Constants ============
@@ -97,14 +97,14 @@ contract MarketFactory is AccessControl, Pausable {
      * @notice Deploy and set the singleton market contract
      * @dev Called once after factory deployment
      */
-    function deploySingletonMarket()
-        external
-        onlyRole(ADMIN_ROLE)
-        returns (address market)
+    function deploySingletonMarket() 
+        external 
+        onlyRole(ADMIN_ROLE) 
+        returns (address market) 
     {
         require(singletonMarket == address(0), "Already deployed");
 
-        ViralityMarket newMarket = new ViralityMarket(treasury, oracle, settlementToken);
+        ViralityMarketV2 newMarket = new ViralityMarketV2(treasury, oracle, settlementToken);
         market = address(newMarket);
         singletonMarket = market;
         isValidMarket[market] = true;
@@ -116,9 +116,9 @@ contract MarketFactory is AccessControl, Pausable {
      * @notice Set an existing contract as singleton market
      * @param market Address of existing market contract
      */
-    function setSingletonMarket(address market)
-        external
-        onlyRole(ADMIN_ROLE)
+    function setSingletonMarket(address market) 
+        external 
+        onlyRole(ADMIN_ROLE) 
     {
         require(market != address(0), "Invalid market");
         singletonMarket = market;
@@ -131,9 +131,9 @@ contract MarketFactory is AccessControl, Pausable {
      * @notice Set market implementation for proxy pattern
      * @param implementation Address of implementation contract
      */
-    function setMarketImplementation(address implementation)
-        external
-        onlyRole(ADMIN_ROLE)
+    function setMarketImplementation(address implementation) 
+        external 
+        onlyRole(ADMIN_ROLE) 
     {
         require(implementation != address(0), "Invalid implementation");
         marketImplementation = implementation;
@@ -145,9 +145,9 @@ contract MarketFactory is AccessControl, Pausable {
      * @notice Set position tokens contract
      * @param token Address of ViralityPositions contract
      */
-    function setPositionsToken(address token)
-        external
-        onlyRole(ADMIN_ROLE)
+    function setPositionsToken(address token) 
+        external 
+        onlyRole(ADMIN_ROLE) 
     {
         require(token != address(0), "Invalid token");
         positionsToken = token;
@@ -162,12 +162,12 @@ contract MarketFactory is AccessControl, Pausable {
      * @dev Only used when useSingleton = false
      * @return proxy Address of deployed proxy
      */
-    function deployProxyMarket()
-        external
+    function deployProxyMarket() 
+        external 
         payable
-        whenNotPaused
+        whenNotPaused 
         onlyRole(DEPLOYER_ROLE)
-        returns (address proxy)
+        returns (address proxy) 
     {
         require(!useSingleton, "Using singleton pattern");
         require(marketImplementation != address(0), "No implementation set");
@@ -177,7 +177,7 @@ contract MarketFactory is AccessControl, Pausable {
         }
 
         proxy = marketImplementation.clone();
-
+        
         deployedProxyMarkets.push(proxy);
         isValidMarket[proxy] = true;
 
@@ -211,19 +211,19 @@ contract MarketFactory is AccessControl, Pausable {
      * @param start Start index
      * @param limit Max markets to return
      */
-    function getProxyMarkets(uint256 start, uint256 limit)
-        external
-        view
-        returns (address[] memory markets)
+    function getProxyMarkets(uint256 start, uint256 limit) 
+        external 
+        view 
+        returns (address[] memory markets) 
     {
         uint256 end = start + limit;
         if (end > deployedProxyMarkets.length) {
             end = deployedProxyMarkets.length;
         }
-
+        
         uint256 length = end - start;
         markets = new address[](length);
-
+        
         for (uint256 i = 0; i < length; i++) {
             markets[i] = deployedProxyMarkets[start + i];
         }
@@ -256,9 +256,9 @@ contract MarketFactory is AccessControl, Pausable {
      * @notice Update treasury address
      * @param _treasury New treasury address
      */
-    function setTreasury(address _treasury)
-        external
-        onlyRole(ADMIN_ROLE)
+    function setTreasury(address _treasury) 
+        external 
+        onlyRole(ADMIN_ROLE) 
     {
         require(_treasury != address(0), "Invalid treasury");
         address old = treasury;
@@ -270,9 +270,9 @@ contract MarketFactory is AccessControl, Pausable {
      * @notice Update oracle address
      * @param _oracle New oracle address
      */
-    function setOracle(address _oracle)
-        external
-        onlyRole(ADMIN_ROLE)
+    function setOracle(address _oracle) 
+        external 
+        onlyRole(ADMIN_ROLE) 
     {
         require(_oracle != address(0), "Invalid oracle");
         address old = oracle;
@@ -284,9 +284,9 @@ contract MarketFactory is AccessControl, Pausable {
      * @notice Update market creation fee
      * @param fee New fee amount
      */
-    function setCreationFee(uint256 fee)
-        external
-        onlyRole(ADMIN_ROLE)
+    function setCreationFee(uint256 fee) 
+        external 
+        onlyRole(ADMIN_ROLE) 
     {
         uint256 old = creationFee;
         creationFee = fee;
@@ -310,9 +310,9 @@ contract MarketFactory is AccessControl, Pausable {
      * @notice Toggle between singleton and proxy patterns
      * @param _useSingleton True for singleton, false for proxies
      */
-    function setUseSingleton(bool _useSingleton)
-        external
-        onlyRole(ADMIN_ROLE)
+    function setUseSingleton(bool _useSingleton) 
+        external 
+        onlyRole(ADMIN_ROLE) 
     {
         useSingleton = _useSingleton;
     }
@@ -321,9 +321,9 @@ contract MarketFactory is AccessControl, Pausable {
      * @notice Withdraw collected creation fees
      * @param to Recipient address
      */
-    function withdrawFees(address to)
-        external
-        onlyRole(ADMIN_ROLE)
+    function withdrawFees(address to) 
+        external 
+        onlyRole(ADMIN_ROLE) 
     {
         require(to != address(0), "Invalid recipient");
         uint256 balance = address(this).balance;

@@ -37,6 +37,7 @@ const config: HardhatUserConfig = {
       url: AVALANCHE_MAINNET_RPC,
       chainId: 43114,
       accounts: [PRIVATE_KEY],
+      timeout: 300000,
     },
     // Arbitrum Networks (legacy)
     arbitrumSepolia: {

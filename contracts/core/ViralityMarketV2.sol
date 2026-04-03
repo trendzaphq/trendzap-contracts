@@ -10,7 +10,7 @@ import "../libraries/LMSR.sol";
 import "../libraries/FixedPointMath.sol";
 
 /**
- * @title ViralityMarket
+ * @title ViralityMarketV2
  * @notice Advanced prediction market using LMSR (Logarithmic Market Scoring Rule)
  * @dev Supports both native AVAX and ERC-20 (USDC) settlement.
  *      When settlementToken == address(0), the market uses native AVAX.
@@ -25,7 +25,7 @@ import "../libraries/FixedPointMath.sol";
  *
  * @author TrendZap Team
  */
-contract ViralityMarket is AccessControl, ReentrancyGuard, Pausable {
+contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
     using LMSR for uint256;
     using FixedPointMath for uint256;
     using SafeERC20 for IERC20;

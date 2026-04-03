@@ -17,7 +17,7 @@ async function main() {
   const chainIdNum = Number(chainId);
 
   console.log("=".repeat(60));
-  console.log("TrendZap Contract Deployment");
+  console.log("TrendZap V2 Contract Deployment");
   console.log("=".repeat(60));
   console.log(`Network: ${network.name} (Chain ID: ${chainIdNum})`);
   console.log(`Deployer: ${deployer.address}`);
@@ -47,24 +47,24 @@ async function main() {
   const positionsAddress = await positions.getAddress();
   console.log(`   ViralityPositions deployed at: ${positionsAddress}`);
 
-  // 2. Deploy ViralityMarket (LMSR market)
-  console.log("\n2. Deploying ViralityMarket...");
-  const ViralityMarket = await ethers.getContractFactory("ViralityMarket");
-  const market = await ViralityMarket.deploy(TREASURY, ORACLE, SETTLEMENT_TOKEN);
+  // 2. Deploy ViralityMarketV2 (LMSR market)
+  console.log("\n2. Deploying ViralityMarketV2...");
+  const ViralityMarketV2 = await ethers.getContractFactory("ViralityMarketV2");
+  const market = await ViralityMarketV2.deploy(TREASURY, ORACLE, SETTLEMENT_TOKEN);
   await market.waitForDeployment();
   const marketAddress = await market.getAddress();
-  console.log(`   ViralityMarket deployed at: ${marketAddress}`);
+  console.log(`   ViralityMarketV2 deployed at: ${marketAddress}`);
 
-  // 3. Deploy MarketFactory
-  console.log("\n3. Deploying MarketFactory...");
-  const MarketFactory = await ethers.getContractFactory("MarketFactory");
-  const factory = await MarketFactory.deploy(TREASURY, ORACLE, SETTLEMENT_TOKEN);
+  // 3. Deploy MarketFactoryV2
+  console.log("\n3. Deploying MarketFactoryV2...");
+  const MarketFactoryV2 = await ethers.getContractFactory("MarketFactoryV2");
+  const factory = await MarketFactoryV2.deploy(TREASURY, ORACLE, SETTLEMENT_TOKEN);
   await factory.waitForDeployment();
   const factoryAddress = await factory.getAddress();
-  console.log(`   MarketFactory deployed at: ${factoryAddress}`);
+  console.log(`   MarketFactoryV2 deployed at: ${factoryAddress}`);
 
   // 4. Configure Factory
-  console.log("\n4. Configuring MarketFactory...");
+  console.log("\n4. Configuring MarketFactoryV2...");
   let tx = await factory.setSingletonMarket(marketAddress);
   await tx.wait();
   console.log("   Set singleton market");
@@ -80,14 +80,14 @@ async function main() {
 
   tx = await positions.grantRole(MARKET_ROLE, marketAddress);
   await tx.wait();
-  console.log("   Granted MARKET_ROLE to ViralityMarket");
+  console.log("   Granted MARKET_ROLE to ViralityMarketV2");
 
   tx = await positions.grantRole(RESOLVER_ROLE, marketAddress);
   await tx.wait();
-  console.log("   Granted RESOLVER_ROLE to ViralityMarket");
+  console.log("   Granted RESOLVER_ROLE to ViralityMarketV2");
 
-  // 6. Grant roles on ViralityMarket
-  console.log("\n6. Setting up roles on ViralityMarket...");
+  // 6. Grant roles on ViralityMarketV2
+  console.log("\n6. Setting up roles on ViralityMarketV2...");
   const KEEPER_ROLE = await market.KEEPER_ROLE();
 
   tx = await market.grantRole(KEEPER_ROLE, deployer.address);
@@ -100,8 +100,8 @@ async function main() {
   console.log("=".repeat(60));
   console.log("\nContract Addresses:");
   console.log(`  ViralityPositions: ${positionsAddress}`);
-  console.log(`  ViralityMarket:    ${marketAddress}`);
-  console.log(`  MarketFactory:     ${factoryAddress}`);
+  console.log(`  ViralityMarketV2:  ${marketAddress}`);
+  console.log(`  MarketFactoryV2:   ${factoryAddress}`);
   console.log(`  Treasury:          ${TREASURY}`);
   console.log(`  Oracle:            ${ORACLE}`);
   console.log(`  Settlement Token:  ${SETTLEMENT_TOKEN || "Native AVAX"}`);
@@ -119,8 +119,8 @@ async function main() {
     timestamp: new Date().toISOString(),
     contracts: {
       ViralityPositions: positionsAddress,
-      ViralityMarket: marketAddress,
-      MarketFactory: factoryAddress,
+      ViralityMarketV2: marketAddress,
+      MarketFactoryV2: factoryAddress,
     },
     configuration: {
       treasury: TREASURY,
