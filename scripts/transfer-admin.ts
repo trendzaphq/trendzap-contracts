@@ -1,14 +1,12 @@
 /**
- * EMERGENCY: Transfer all admin + oracle roles to new safe wallets.
- *
- * Run this IMMEDIATELY if your deployer key is compromised.
- * This script grants roles to new wallets and revokes them from the old (compromised) one.
+ * EMERGENCY: Transfer admin + oracle roles to new safe wallet.
+ * Uses high gas price to front-run any sweeper bot on the compromised wallet.
  *
  * Usage:
- *   NEW_ADMIN=0xYourSafeAdmin NEW_ORACLE=0xYourOracleWallet npx hardhat run scripts/transfer-admin.ts --network avalanche
+ *   NEW_ADMIN=0x... NEW_ORACLE=0x... npx hardhat run scripts/transfer-admin.ts --network avalancheMainnet
  *
- * IMPORTANT: The PRIVATE_KEY in .env must be the *current* admin (compromised wallet).
- * Act fast — run this before the attacker can front-run you.
+ * PRIVATE_KEY in .env must be the compromised deployer key.
+ * Fund the deployer wallet with 0.05 AVAX, then run immediately.
  */
 
 import { ethers } from "hardhat";
@@ -20,8 +18,16 @@ const MARKET_ABI = [
   "function setTreasury(address _treasury) external",
 ];
 
+// High gas override — competes with sweeper bots
+// Avalanche base fee ~25 nAVAX; we set 10x to ensure priority
+const GAS_OVERRIDE = {
+  maxFeePerGas: ethers.parseUnits("250", "gwei"),
+  maxPriorityFeePerGas: ethers.parseUnits("100", "gwei"),
+  gasLimit: 100_000,
+};
+
 async function main() {
-  const [compromisedSigner] = await ethers.getSigners();
+  const [signer] = await ethers.getSigners();
   const marketAddress = process.env.MARKET_CONTRACT_ADDRESS;
   const newAdminAddress = process.env.NEW_ADMIN;
   const newOracleAddress = process.env.NEW_ORACLE;
@@ -30,72 +36,85 @@ async function main() {
   if (!newAdminAddress) throw new Error("Set NEW_ADMIN=0x... env var");
   if (!newOracleAddress) throw new Error("Set NEW_ORACLE=0x... env var");
 
-  const market = new ethers.Contract(marketAddress, MARKET_ABI, compromisedSigner);
+  const balance = await ethers.provider.getBalance(signer.address);
+  console.log("=".repeat(60));
+  console.log("EMERGENCY ADMIN TRANSFER");
+  console.log("=".repeat(60));
+  console.log(`Signing from (compromised): ${signer.address}`);
+  console.log(`Balance:                    ${ethers.formatEther(balance)} AVAX`);
+  console.log(`New admin + oracle:         ${newAdminAddress}`);
+  console.log("=".repeat(60));
+
+  if (balance < ethers.parseEther("0.005")) {
+    throw new Error(
+      `Insufficient balance. Fund ${signer.address} with at least 0.05 AVAX then run again.`
+    );
+  }
+
+  const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
 
   const DEFAULT_ADMIN_ROLE = ethers.ZeroHash;
   const ORACLE_ROLE = ethers.keccak256(ethers.toUtf8Bytes("ORACLE_ROLE"));
   const KEEPER_ROLE = ethers.keccak256(ethers.toUtf8Bytes("KEEPER_ROLE"));
   const ADMIN_ROLE = ethers.keccak256(ethers.toUtf8Bytes("ADMIN_ROLE"));
 
-  console.log("=".repeat(60));
-  console.log("EMERGENCY ADMIN TRANSFER");
-  console.log("=".repeat(60));
-  console.log(`Compromised admin: ${compromisedSigner.address}`);
-  console.log(`New admin:         ${newAdminAddress}`);
-  console.log(`New oracle:        ${newOracleAddress}`);
-  console.log("=".repeat(60));
+  // Fetch starting nonce once (prevents nonce issues across rapid TXs)
+  let nonce = await ethers.provider.getTransactionCount(signer.address, "pending");
 
-  // Step 1: Grant DEFAULT_ADMIN_ROLE to new admin FIRST
-  console.log("\n[1/5] Granting DEFAULT_ADMIN_ROLE to new admin...");
-  const tx1 = await market.grantRole(DEFAULT_ADMIN_ROLE, newAdminAddress);
-  await tx1.wait();
-  console.log(`  ✓ TX: ${tx1.hash}`);
+  async function send(description: string, fn: () => Promise<any>) {
+    console.log(`\n→ ${description}`);
+    const tx = await fn();
+    console.log(`  TX: ${tx.hash}`);
+    const receipt = await tx.wait();
+    console.log(`  ✓ Confirmed (block ${receipt.blockNumber})`);
+    nonce++;
+    return tx;
+  }
 
-  // Step 2: Grant ORACLE_ROLE to new oracle wallet
-  console.log("[2/5] Granting ORACLE_ROLE to new oracle...");
-  const tx2 = await market.grantRole(ORACLE_ROLE, newOracleAddress);
-  await tx2.wait();
-  console.log(`  ✓ TX: ${tx2.hash}`);
+  // 1. Grant DEFAULT_ADMIN_ROLE — most critical, do first
+  await send("Grant DEFAULT_ADMIN_ROLE to new wallet", () =>
+    market.grantRole(DEFAULT_ADMIN_ROLE, newAdminAddress, { ...GAS_OVERRIDE, nonce: nonce })
+  );
 
-  // Step 3: Grant ADMIN_ROLE and KEEPER_ROLE to new admin
-  console.log("[3/5] Granting ADMIN_ROLE + KEEPER_ROLE to new admin...");
-  const tx3 = await market.grantRole(ADMIN_ROLE, newAdminAddress);
-  await tx3.wait();
-  const tx3b = await market.grantRole(KEEPER_ROLE, newAdminAddress);
-  await tx3b.wait();
-  console.log(`  ✓ ADMIN_ROLE TX: ${tx3.hash}`);
+  // 2. Grant ORACLE_ROLE
+  await send("Grant ORACLE_ROLE to new wallet", () =>
+    market.grantRole(ORACLE_ROLE, newOracleAddress, { ...GAS_OVERRIDE, nonce: nonce })
+  );
 
-  // Step 4: Update treasury to new admin (so protocol fees go to safe address)
-  console.log("[4/5] Updating treasury address to new admin...");
-  const tx4 = await market.setTreasury(newAdminAddress);
-  await tx4.wait();
-  console.log(`  ✓ TX: ${tx4.hash}`);
+  // 3. Grant ADMIN_ROLE + KEEPER_ROLE
+  await send("Grant ADMIN_ROLE to new wallet", () =>
+    market.grantRole(ADMIN_ROLE, newAdminAddress, { ...GAS_OVERRIDE, nonce: nonce })
+  );
+  await send("Grant KEEPER_ROLE to new wallet", () =>
+    market.grantRole(KEEPER_ROLE, newAdminAddress, { ...GAS_OVERRIDE, nonce: nonce })
+  );
 
-  // Step 5: Revoke all roles from compromised address
-  console.log("[5/5] Revoking all roles from compromised address...");
+  // 4. Move treasury so protocol fees go to new wallet
+  await send("Update treasury to new wallet", () =>
+    market.setTreasury(newAdminAddress, { ...GAS_OVERRIDE, nonce: nonce })
+  );
+
+  // 5. Revoke all from compromised address
   for (const [name, role] of [
     ["DEFAULT_ADMIN_ROLE", DEFAULT_ADMIN_ROLE],
     ["ORACLE_ROLE", ORACLE_ROLE],
     ["ADMIN_ROLE", ADMIN_ROLE],
     ["KEEPER_ROLE", KEEPER_ROLE],
   ] as const) {
-    const hasIt = await market.hasRole(role, compromisedSigner.address);
+    const hasIt = await market.hasRole(role, signer.address);
     if (hasIt) {
-      const tx = await market.revokeRole(role, compromisedSigner.address);
-      await tx.wait();
-      console.log(`  ✓ Revoked ${name}: ${tx.hash}`);
+      await send(`Revoke ${name} from compromised wallet`, () =>
+        market.revokeRole(role, signer.address, { ...GAS_OVERRIDE, nonce: nonce })
+      );
     }
   }
 
   console.log("\n" + "=".repeat(60));
-  console.log("✓ TRANSFER COMPLETE");
+  console.log("✓ DONE — all roles transferred");
   console.log("=".repeat(60));
-  console.log(`New admin has control:  ${newAdminAddress}`);
-  console.log(`New oracle can resolve: ${newOracleAddress}`);
-  console.log("\nNext steps:");
-  console.log("1. Update ORACLE_PRIVATE_KEY in trendzap-oracle/.env to the new oracle key");
-  console.log("2. Never send AVAX to the old compromised address again");
-  console.log("3. Notify the AVAX team that treasury/admin address has changed");
+  console.log(`Your new wallet ${newAdminAddress} now controls the contracts.`);
+  console.log("Protocol fees (treasury) now flow to your new wallet.");
+  console.log("Never send AVAX to the old compromised address again.");
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
