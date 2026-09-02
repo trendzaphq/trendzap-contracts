@@ -95,8 +95,17 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         uint256 qUnder; // Outstanding UNDER shares
         uint256 b; // Liquidity parameter
         uint256 totalVolume; // Total trading volume
-        uint256 feesCollected; // Platform fees collected
-        uint256 poolBalance; // Net ETH held for this market's payouts
+        uint256 feesCollected; // Fees held for treasury + creator, part of poolBalance
+        uint256 poolBalance; // ALL settlement asset held for this market
+        /// @dev Sum of every trader's remaining cost basis, used to settle refunds
+        ///      pro-rata when a market is cancelled.
+        uint256 totalCostBasis;
+        /// @dev poolBalance snapshotted at resolution (or cancellation), after fees.
+        ///      Every payout divides this fixed number by a fixed share total, so
+        ///      claims are order-independent and sum exactly to the pot.
+        uint256 settlementPool;
+        /// @dev Winning-share total frozen at resolution.
+        uint256 settlementShares;
     }
 
     struct Market {
@@ -118,16 +127,6 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         bool claimed;
     }
 
-    struct Trade {
-        address trader;
-        uint256 marketId;
-        bool isOver;
-        bool isBuy;
-        uint256 shares;
-        uint256 cost;
-        uint256 timestamp;
-    }
-
     // ============ State Variables ============
 
     uint256 public nextMarketId;
@@ -142,8 +141,15 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
     // Market ID => User => Position
     mapping(uint256 => mapping(address => Position)) public positions;
 
-    // All trades (for indexing and analytics)
-    Trade[] public trades;
+    /**
+     * @dev Withdrawable balances, credited instead of pushed.
+     *
+     * _distributeFees used to transfer the creator fee inline during resolveMarket.
+     * The creator is an arbitrary user-supplied address, so a contract that reverts on
+     * receive would make resolveMarket revert too — permanently blocking resolution of
+     * its own market. Fees are now credited here and pulled via withdraw().
+     */
+    mapping(address => uint256) public pendingWithdrawals;
 
     // ============ Events ============
 
@@ -204,6 +210,19 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         uint256 creatorFee
     );
 
+    event MarketCancelled(uint256 indexed marketId, string reason);
+
+    event RefundClaimed(
+        uint256 indexed marketId,
+        address indexed user,
+        uint256 amount
+    );
+
+    event Withdrawn(address indexed account, uint256 amount);
+
+    /// @notice Emitted when a market resolves with no holders on the winning side.
+    event UnclaimedPoolSwept(uint256 indexed marketId, uint256 amount);
+
     // ============ Constructor ============
 
     constructor(address _treasury, address _oracle, address _settlementToken) {
@@ -242,7 +261,7 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         MarketParams calldata params,
         uint256 initialBet,
         bool betOnOver
-    ) external payable whenNotPaused returns (uint256 marketId) {
+    ) external payable nonReentrant whenNotPaused returns (uint256 marketId) {
         require(bytes(params.postUrl).length > 0, "Invalid post URL");
         require(params.threshold > 0, "Invalid threshold");
         require(params.startTime >= block.timestamp, "Invalid start time");
@@ -252,13 +271,23 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
             "Invalid resolution time"
         );
 
+        // The seed bet is subject to the same bounds as any other trade. It was
+        // previously unbounded, so a market could be seeded below the minimum — which
+        // produced a tiny liquidity parameter and a market that ran away after a few
+        // hundred units of one-sided volume.
         if (initialBet > 0) {
             if (isTokenSettlement()) {
-                // Pull ERC-20 tokens from caller
+                require(msg.value == 0, "Do not send native value in token mode");
+                require(initialBet >= MIN_BET_AMOUNT_TOKEN, "Bet too small");
+                require(initialBet <= MAX_BET_AMOUNT_TOKEN, "Bet too large");
                 IERC20(settlementToken).safeTransferFrom(msg.sender, address(this), initialBet);
             } else {
+                require(initialBet >= MIN_BET_AMOUNT_NATIVE, "Bet too small");
+                require(initialBet <= MAX_BET_AMOUNT_NATIVE, "Bet too large");
                 require(msg.value >= initialBet, "Insufficient payment");
             }
+        } else if (isTokenSettlement()) {
+            require(msg.value == 0, "Do not send native value in token mode");
         }
 
         marketId = nextMarketId++;
@@ -277,7 +306,10 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
                 b: b,
                 totalVolume: 0,
                 feesCollected: 0,
-                poolBalance: 0
+                poolBalance: 0,
+                totalCostBasis: 0,
+                settlementPool: 0,
+                settlementShares: 0
             }),
             status: MarketStatus.ACTIVE,
             outcome: Outcome.NONE,
@@ -298,10 +330,15 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
             b
         );
 
-        // Place initial bet if provided
+        // Place initial bet if provided.
         if (initialBet > 0) {
-            uint256 payment = isTokenSettlement() ? initialBet : msg.value;
-            _buyShares(marketId, payment, betOnOver, msg.sender);
+            _buyShares(marketId, initialBet, betOnOver, msg.sender, 0);
+        }
+
+        // Refund native change. Previously `payment` was msg.value in native mode, so
+        // anything sent above initialBet was silently absorbed into the market.
+        if (!isTokenSettlement() && msg.value > initialBet) {
+            _sendValue(msg.sender, msg.value - initialBet);
         }
     }
 
@@ -314,10 +351,19 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
     function buyShares(
         uint256 marketId,
         bool isOver,
-        uint256 amount
+        uint256 amount,
+        uint256 minSharesOut,
+        uint256 deadline
     ) external payable nonReentrant whenNotPaused {
+        require(block.timestamp <= deadline, "Transaction expired");
+
+        Market storage market = markets[marketId];
+        require(market.status == MarketStatus.ACTIVE, "Market not active");
+        require(block.timestamp < market.params.endTime, "Betting closed");
+
         uint256 payment;
         if (isTokenSettlement()) {
+            require(msg.value == 0, "Do not send native value in token mode");
             require(amount >= MIN_BET_AMOUNT_TOKEN, "Bet too small");
             require(amount <= MAX_BET_AMOUNT_TOKEN, "Bet too large");
             IERC20(settlementToken).safeTransferFrom(msg.sender, address(this), amount);
@@ -328,11 +374,37 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
             payment = msg.value;
         }
 
+        _buyShares(marketId, payment, isOver, msg.sender, minSharesOut);
+    }
+
+    /**
+     * @notice Buy shares without slippage protection (backwards-compatible overload)
+     * @dev Prefer buyShares(id, isOver, amount, minSharesOut, deadline). This form
+     *      accepts any fill, so a trade can be sandwiched or reordered freely.
+     */
+    function buyShares(
+        uint256 marketId,
+        bool isOver,
+        uint256 amount
+    ) external payable nonReentrant whenNotPaused {
         Market storage market = markets[marketId];
         require(market.status == MarketStatus.ACTIVE, "Market not active");
         require(block.timestamp < market.params.endTime, "Betting closed");
 
-        _buyShares(marketId, payment, isOver, msg.sender);
+        uint256 payment;
+        if (isTokenSettlement()) {
+            require(msg.value == 0, "Do not send native value in token mode");
+            require(amount >= MIN_BET_AMOUNT_TOKEN, "Bet too small");
+            require(amount <= MAX_BET_AMOUNT_TOKEN, "Bet too large");
+            IERC20(settlementToken).safeTransferFrom(msg.sender, address(this), amount);
+            payment = amount;
+        } else {
+            require(msg.value >= MIN_BET_AMOUNT_NATIVE, "Bet too small");
+            require(msg.value <= MAX_BET_AMOUNT_NATIVE, "Bet too large");
+            payment = msg.value;
+        }
+
+        _buyShares(marketId, payment, isOver, msg.sender, 0);
     }
 
     /**
@@ -352,7 +424,7 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         require(market.status == MarketStatus.ACTIVE, "Market not active");
         require(block.timestamp < market.params.endTime, "Betting closed");
 
-        _buyShares(marketId, msg.value, isOver, msg.sender);
+        _buyShares(marketId, msg.value, isOver, msg.sender, 0);
     }
 
     /**
@@ -364,8 +436,41 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
     function sellShares(
         uint256 marketId,
         uint256 shares,
+        bool isOver,
+        uint256 minPayout,
+        uint256 deadline
+    ) external nonReentrant whenNotPaused {
+        require(block.timestamp <= deadline, "Transaction expired");
+        _sellShares(marketId, shares, isOver, minPayout);
+    }
+
+    /**
+     * @notice Sell shares without slippage protection (backwards-compatible overload)
+     */
+    function sellShares(
+        uint256 marketId,
+        uint256 shares,
         bool isOver
     ) external nonReentrant whenNotPaused {
+        _sellShares(marketId, shares, isOver, 0);
+    }
+
+    /**
+     * @dev Sell `shares` back to the market maker.
+     *
+     * The pool is debited only by what actually leaves the contract, and the fee stays
+     * inside poolBalance under feesCollected. Previously buys credited the pool net of
+     * fees while sells debited the full LMSR value, so the pool drifted below the cost
+     * function by the accumulated fees and `poolBalance -= payout` eventually reverted
+     * on underflow — permanently disabling selling for that market while buying still
+     * worked.
+     */
+    function _sellShares(
+        uint256 marketId,
+        uint256 shares,
+        bool isOver,
+        uint256 minPayout
+    ) internal {
         require(shares > 0, "Must sell positive shares");
 
         Market storage market = markets[marketId];
@@ -373,19 +478,8 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         require(block.timestamp < market.params.endTime, "Betting closed");
 
         Position storage position = positions[marketId][msg.sender];
-
-        if (isOver) {
-            require(position.overShares >= shares, "Insufficient OVER shares");
-        } else {
-            require(
-                position.underShares >= shares,
-                "Insufficient UNDER shares"
-            );
-        }
-
         MarketState storage state = market.state;
 
-        // Calculate payout for selling shares (negative cost = payout)
         int256 tradeCost = LMSR.calculateTradeCost(
             state.qOver,
             state.qUnder,
@@ -397,42 +491,42 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         require(tradeCost < 0, "Sell would cost money");
         uint256 payout = uint256(-tradeCost);
 
-        // Update state
+        // Reduce the cost basis in proportion to the shares sold.
+        //
+        // sellShares used to leave overCost/underCost untouched, so a trader could buy
+        // in, sell everything back, and still claim a full refund on the original
+        // stake if the market was later cancelled.
         if (isOver) {
+            require(position.overShares >= shares, "Insufficient OVER shares");
+            uint256 basisOut = (position.overCost * shares) / position.overShares;
+            position.overCost -= basisOut;
+            state.totalCostBasis -= basisOut;
             state.qOver -= shares;
             position.overShares -= shares;
         } else {
+            require(position.underShares >= shares, "Insufficient UNDER shares");
+            uint256 basisOut = (position.underCost * shares) / position.underShares;
+            position.underCost -= basisOut;
+            state.totalCostBasis -= basisOut;
             state.qUnder -= shares;
             position.underShares -= shares;
         }
 
-        // Apply fee
         uint256 fee = (payout * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
         uint256 netPayout = payout - fee;
-        state.feesCollected += fee;
-        state.poolBalance -= payout; // remove gross from pool, fee stays in contract
+        require(netPayout >= minPayout, "Slippage: payout too low");
 
-        // Get new prices
+        state.feesCollected += fee;
+        // Only the amount actually leaving the contract is debited; the fee remains in
+        // poolBalance, earmarked by feesCollected.
+        state.poolBalance -= netPayout;
+
         (uint256 newPriceOver, uint256 newPriceUnder) = LMSR.getPrices(
             state.qOver,
             state.qUnder,
             state.b
         );
 
-        // Record trade
-        trades.push(
-            Trade({
-                trader: msg.sender,
-                marketId: marketId,
-                isOver: isOver,
-                isBuy: false,
-                shares: shares,
-                cost: payout,
-                timestamp: block.timestamp
-            })
-        );
-
-        // Transfer payout
         _transferOut(msg.sender, netPayout);
 
         emit SharesSold(
@@ -474,6 +568,25 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         market.status = MarketStatus.RESOLVED;
         market.resolvedAt = block.timestamp;
 
+        // Credit fees, then freeze the settlement pot.
+        _distributeFees(marketId);
+
+        MarketState storage state = market.state;
+        state.settlementPool = state.poolBalance;
+        state.settlementShares = market.outcome == Outcome.OVER
+            ? state.qOver
+            : state.qUnder;
+
+        // Nobody held the winning side: no claim is possible, so sweep the pot to the
+        // treasury rather than stranding it in the contract forever.
+        if (state.settlementShares == 0 && state.settlementPool > 0) {
+            uint256 unclaimed = state.settlementPool;
+            state.settlementPool = 0;
+            state.poolBalance -= unclaimed;
+            pendingWithdrawals[treasury] += unclaimed;
+            emit UnclaimedPoolSwept(marketId, unclaimed);
+        }
+
         emit MarketStatusChanged(marketId, oldStatus, MarketStatus.RESOLVED);
         emit MarketResolved(
             marketId,
@@ -481,14 +594,21 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
             metricValue,
             block.timestamp
         );
-
-        // Distribute fees
-        _distributeFees(marketId);
     }
 
     /**
      * @notice Claim winnings from a resolved market
      * @param marketId The market ID
+     *
+     * @dev Payouts divide a pot frozen at resolution by a share total frozen at
+     *      resolution, so every winner receives the same proportion regardless of when
+     *      they claim, and the payouts sum to the pot.
+     *
+     *      This previously divided the LIVE poolBalance by the live winning-share
+     *      total. poolBalance shrank with each claim while the share total did not, so
+     *      each successive claimant received less for an identical position (100 /
+     *      66.7 / 44.4 for three equal winners) and roughly 30% of the pot was
+     *      permanently stranded. Payout also depended on claim order, making it a race.
      */
     function claimWinnings(uint256 marketId) external nonReentrant {
         Market storage market = markets[marketId];
@@ -506,19 +626,17 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
 
         require(winningShares > 0, "No winning shares");
 
+        MarketState storage state = market.state;
+        require(state.settlementShares > 0, "Nothing to distribute");
+
         position.claimed = true;
 
-        // Proportional payout from pool
-        uint256 totalWinningShares;
-        if (market.outcome == Outcome.OVER) {
-            totalWinningShares = market.state.qOver;
-        } else {
-            totalWinningShares = market.state.qUnder;
-        }
+        uint256 payout = (winningShares * state.settlementPool) /
+            state.settlementShares;
 
-        uint256 payout = (winningShares * market.state.poolBalance) /
-            totalWinningShares;
-        market.state.poolBalance -= payout;
+        // Defensive: rounding must never let claims exceed what is held.
+        if (payout > state.poolBalance) payout = state.poolBalance;
+        state.poolBalance -= payout;
 
         _transferOut(msg.sender, payout);
 
@@ -543,32 +661,66 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Cancel a market (refunds all bets)
+     * @notice Cancel a market, making every remaining stake refundable
      * @param marketId The market ID
+     * @param reason Human-readable cancellation reason, emitted for indexers
+     *
+     * @dev No fee is charged on a cancelled market, so feesCollected is released back
+     *      into the refund pot.
      */
     function cancelMarket(
         uint256 marketId,
         string calldata reason
     ) external onlyRole(ADMIN_ROLE) {
         Market storage market = markets[marketId];
+        MarketStatus oldStatus = market.status;
         require(
-            market.status == MarketStatus.PENDING ||
-                market.status == MarketStatus.ACTIVE ||
-                market.status == MarketStatus.CLOSED,
+            oldStatus == MarketStatus.PENDING ||
+                oldStatus == MarketStatus.ACTIVE ||
+                oldStatus == MarketStatus.CLOSED,
             "Cannot cancel"
         );
 
         market.status = MarketStatus.CANCELLED;
-        emit MarketStatusChanged(
-            marketId,
-            market.status,
-            MarketStatus.CANCELLED
-        );
+
+        MarketState storage state = market.state;
+        // Cancelled markets take no fee; the whole balance is refundable.
+        state.feesCollected = 0;
+        state.settlementPool = state.poolBalance;
+        state.settlementShares = state.totalCostBasis;
+
+        // Nobody holds a cost basis (everyone sold out before the cancellation), so no
+        // refund can be claimed. Sweep the residual to the treasury rather than
+        // leaving it locked in the contract.
+        if (state.totalCostBasis == 0 && state.poolBalance > 0) {
+            uint256 residual = state.poolBalance;
+            state.settlementPool = 0;
+            state.poolBalance = 0;
+            pendingWithdrawals[treasury] += residual;
+            emit UnclaimedPoolSwept(marketId, residual);
+        }
+
+        // Capture the old status BEFORE the assignment. This used to read
+        // market.status afterwards, so the event always reported CANCELLED -> CANCELLED
+        // and no indexer could tell what the market had been.
+        emit MarketStatusChanged(marketId, oldStatus, MarketStatus.CANCELLED);
+        emit MarketCancelled(marketId, reason);
     }
 
     /**
-     * @notice Claim refund from cancelled market
+     * @notice Claim a refund from a cancelled market
      * @param marketId The market ID
+     *
+     * @dev Refunds are pro-rata against the balance actually held, using each
+     *      trader's remaining cost basis as the weight. Because both the pot and the
+     *      basis total are frozen at cancellation, refunds are order-independent and
+     *      sum exactly to the pot.
+     *
+     *      This previously paid out `overCost + underCost` — the GROSS amount paid in,
+     *      including fees — from a pool that had only ever been credited net of fees.
+     *      Refunds owed therefore exceeded the pool by exactly the fees collected, it
+     *      never decremented poolBalance so the contract had no record of what it had
+     *      paid, and the shortfall was absorbed by whoever claimed last.
      */
     function claimRefund(uint256 marketId) external nonReentrant {
         Market storage market = markets[marketId];
@@ -577,15 +729,44 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         Position storage position = positions[marketId][msg.sender];
         require(!position.claimed, "Already claimed");
 
-        uint256 refund = position.overCost + position.underCost;
-        require(refund > 0, "Nothing to refund");
+        uint256 basis = position.overCost + position.underCost;
+        require(basis > 0, "Nothing to refund");
+
+        MarketState storage state = market.state;
+        require(state.settlementShares > 0, "Nothing to distribute");
 
         position.claimed = true;
 
+        uint256 refund = (basis * state.settlementPool) / state.settlementShares;
+        if (refund > state.poolBalance) refund = state.poolBalance;
+        state.poolBalance -= refund;
+
         _transferOut(msg.sender, refund);
+
+        emit RefundClaimed(marketId, msg.sender, refund);
+    }
+
+    /**
+     * @notice Withdraw fees or swept balances credited to the caller
+     * @dev Pull payment. Fees used to be pushed inline during resolveMarket, so a
+     *      creator address that reverts on receive would revert the resolution itself
+     *      and permanently block its own market from settling.
+     */
+    function withdraw() external nonReentrant {
+        uint256 amount = pendingWithdrawals[msg.sender];
+        require(amount > 0, "Nothing to withdraw");
+        pendingWithdrawals[msg.sender] = 0;
+        _transferOut(msg.sender, amount);
+        emit Withdrawn(msg.sender, amount);
     }
 
     // ============ View Functions ============
+
+    /// @dev Reverts with a clear message for ids that were never created.
+    modifier marketExists(uint256 marketId) {
+        require(marketId < nextMarketId, "Market does not exist");
+        _;
+    }
 
     /**
      * @notice Get current prices for a market
@@ -595,7 +776,7 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
      */
     function getPrices(
         uint256 marketId
-    ) external view returns (uint256 priceOver, uint256 priceUnder) {
+    ) external view marketExists(marketId) returns (uint256 priceOver, uint256 priceUnder) {
         Market storage market = markets[marketId];
         return
             LMSR.getPrices(
@@ -606,17 +787,19 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @notice Get implied probabilities as percentages
+     * @notice Get implied probabilities in basis points (0-10000)
      * @param marketId The market ID
-     * @return probOver Probability of OVER (0-100)
-     * @return probUnder Probability of UNDER (0-100)
+     * @return probOver Probability of OVER, in bps
+     * @return probUnder Probability of UNDER, in bps
+     * @dev Basis points rather than whole percent: the previous version divided into a
+     *      0-100 integer and discarded everything below a full percentage point.
      */
-    function getProbabilities(
+    function getProbabilitiesBps(
         uint256 marketId
-    ) external view returns (uint256 probOver, uint256 probUnder) {
+    ) external view marketExists(marketId) returns (uint256 probOver, uint256 probUnder) {
         Market storage market = markets[marketId];
         return
-            LMSR.getProbabilities(
+            LMSR.getProbabilitiesBps(
                 market.state.qOver,
                 market.state.qUnder,
                 market.state.b
@@ -634,7 +817,7 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         uint256 marketId,
         uint256 shares,
         bool isOver
-    ) external view returns (uint256 cost) {
+    ) external view marketExists(marketId) returns (uint256 cost) {
         Market storage market = markets[marketId];
         return
             LMSR.calculateBuyCost(
@@ -657,7 +840,7 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         uint256 marketId,
         uint256 payment,
         bool isOver
-    ) external view returns (uint256 shares) {
+    ) external view marketExists(marketId) returns (uint256 shares) {
         Market storage market = markets[marketId];
         return
             LMSR.calculateSharesForPayment(
@@ -689,31 +872,24 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         return positions[marketId][user];
     }
 
-    /**
-     * @notice Get total number of trades
-     */
-    function getTradeCount() external view returns (uint256) {
-        return trades.length;
-    }
-
     // ============ Internal Functions ============
 
     function _buyShares(
         uint256 marketId,
         uint256 payment,
         bool isOver,
-        address trader
+        address trader,
+        uint256 minSharesOut
     ) internal {
         Market storage market = markets[marketId];
         MarketState storage state = market.state;
         Position storage position = positions[marketId][trader];
 
-        // Apply fee to payment
+        // Fee is taken from the payment; the remainder funds the LMSR position.
         uint256 fee = (payment * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
         uint256 netPayment = payment - fee;
         state.feesCollected += fee;
 
-        // Calculate shares for net payment
         uint256 shares = LMSR.calculateSharesForPayment(
             state.qOver,
             state.qUnder,
@@ -723,8 +899,8 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         );
 
         require(shares > 0, "Payment too small");
+        require(shares >= minSharesOut, "Slippage: too few shares");
 
-        // Update state
         if (isOver) {
             state.qOver += shares;
             position.overShares += shares;
@@ -736,26 +912,15 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         }
 
         state.totalVolume += payment;
-        state.poolBalance += netPayment; // track ETH held for payouts
+        state.totalCostBasis += payment;
+        // GROSS. feesCollected is a claim against this balance, not a separate pot.
+        state.poolBalance += payment;
 
         // Get new prices
         (uint256 newPriceOver, uint256 newPriceUnder) = LMSR.getPrices(
             state.qOver,
             state.qUnder,
             state.b
-        );
-
-        // Record trade
-        trades.push(
-            Trade({
-                trader: trader,
-                marketId: marketId,
-                isOver: isOver,
-                isBuy: true,
-                shares: shares,
-                cost: payment,
-                timestamp: block.timestamp
-            })
         );
 
         emit SharesBought(
@@ -775,18 +940,18 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
 
         if (totalFees == 0) return;
 
-        // Split: 80% platform, 20% creator (0.5% of 2.5% total)
+        // Split: 80% platform, 20% creator (0.5% of the 2.5% headline total)
         uint256 creatorFee = (totalFees * CREATOR_FEE_BPS) /
             (PLATFORM_FEE_BPS + CREATOR_FEE_BPS);
         uint256 platformFee = totalFees - creatorFee;
 
-        // Transfer to treasury
-        _transferOut(treasury, platformFee);
-
-        // Transfer to creator
-        _transferOut(market.creator, creatorFee);
-
         market.state.feesCollected = 0;
+        // Fees were held inside poolBalance; remove them now that they are earmarked.
+        market.state.poolBalance -= totalFees;
+
+        // Credited, not transferred — see withdraw().
+        pendingWithdrawals[treasury] += platformFee;
+        pendingWithdrawals[market.creator] += creatorFee;
 
         emit FeesWithdrawn(marketId, platformFee, creatorFee);
     }
@@ -797,9 +962,15 @@ contract ViralityMarketV2 is AccessControl, ReentrancyGuard, Pausable {
         if (isTokenSettlement()) {
             IERC20(settlementToken).safeTransfer(to, amount);
         } else {
-            (bool success, ) = to.call{value: amount}("");
-            require(success, "Transfer failed");
+            _sendValue(to, amount);
         }
+    }
+
+    /// @dev Send native value, reverting on failure.
+    function _sendValue(address to, uint256 amount) internal {
+        if (amount == 0) return;
+        (bool success, ) = to.call{value: amount}("");
+        require(success, "Transfer failed");
     }
 
     // ============ Admin Functions ============

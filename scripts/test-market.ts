@@ -67,13 +67,13 @@ async function main() {
   
   // Buy OVER shares
   const bet1 = ethers.parseEther("0.05");
-  const tx2 = await market.buyShares(marketId, true, { value: bet1 });
+  const tx2 = await market["buyShares(uint256,bool)"](marketId, true, { value: bet1 });
   await tx2.wait();
   console.log(`   ✓ Bought OVER shares for ${ethers.formatEther(bet1)} ETH`);
 
   // Buy UNDER shares
   const bet2 = ethers.parseEther("0.03");
-  const tx3 = await market.buyShares(marketId, false, { value: bet2 });
+  const tx3 = await market["buyShares(uint256,bool)"](marketId, false, { value: bet2 });
   await tx3.wait();
   console.log(`   ✓ Bought UNDER shares for ${ethers.formatEther(bet2)} ETH`);
 
