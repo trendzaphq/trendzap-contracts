@@ -234,8 +234,10 @@ describe("TrendZap V2 Contracts", function () {
         const { market, user1 } = await loadFixture(deployContractsFixture);
         await createMarketAtFixedTime(market, user1, ethers.parseEther("0.1"), true);
 
-        const [probOver, probUnder] = await market.getProbabilities(0);
-        expect(probOver + probUnder).to.be.closeTo(100n, 1n);
+        // getProbabilities -> getProbabilitiesBps: the old form divided into a 0-100
+        // integer and discarded everything below a whole percentage point.
+        const [probOver, probUnder] = await market.getProbabilitiesBps(0);
+        expect(probOver + probUnder).to.be.closeTo(10000n, 1n);
       });
     });
 

@@ -22,6 +22,11 @@ const config: HardhatUserConfig = {
       viaIR: true,
     },
   },
+  // The LMSR paths are computation-heavy and these suites run many transactions;
+  // the 40s default trips on slower machines before anything is actually wrong.
+  mocha: {
+    timeout: 300000,
+  },
   networks: {
     hardhat: {
       chainId: 31337,

@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/proxy/Clones.sol";
-import "./ViralityMarketV2.sol";
+// ViralityMarketV2 is referenced by address only — see setSingletonMarket().
 
 /**
  * @title MarketFactoryV2
@@ -93,24 +93,13 @@ contract MarketFactoryV2 is AccessControl, Pausable {
 
     // ============ Initialization ============
 
-    /**
-     * @notice Deploy and set the singleton market contract
-     * @dev Called once after factory deployment
-     */
-    function deploySingletonMarket() 
-        external 
-        onlyRole(ADMIN_ROLE) 
-        returns (address market) 
-    {
-        require(singletonMarket == address(0), "Already deployed");
-
-        ViralityMarketV2 newMarket = new ViralityMarketV2(treasury, oracle, settlementToken);
-        market = address(newMarket);
-        singletonMarket = market;
-        isValidMarket[market] = true;
-
-        emit SingletonMarketSet(market);
-    }
+    // deploySingletonMarket() was removed.
+    //
+    // It was the only thing that made this factory embed ViralityMarketV2's full
+    // bytecode via `new`, which pushed the factory to 26,952 bytes — past the 24,576
+    // byte contract size limit, making it undeployable. Nothing called it: deploy-v2.ts
+    // deploys the market separately and calls setSingletonMarket() below, which is the
+    // pattern the live deployment actually used.
 
     /**
      * @notice Set an existing contract as singleton market
